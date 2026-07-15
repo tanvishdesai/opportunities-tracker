@@ -1,0 +1,31 @@
+{
+  "_comment": "Edit this file to add/remove sources. No code changes needed.",
+
+  "run_interval_days": 4,
+
+  "feeds": [
+    { "name": "FacultyTick - IIT (all post types)",  "url": "https://facultytick.com/tag/iit/feed/" },
+    { "name": "FacultyTick - NIT (all post types)",  "url": "https://facultytick.com/tag/nit/feed/" },
+    { "name": "FacultyTick - IIIT (all post types)", "url": "https://facultytick.com/tag/iiit/feed/" },
+    { "name": "FacultyTick - Research category",     "url": "https://facultytick.com/category/research/feed/" }
+  ],
+
+  "pages": [
+    { "name": "IIT Gandhinagar - Project Staff Portal", "url": "http://recruitment.iitgn.ac.in/projectstaff/" },
+    { "name": "IIT Ropar - Careers",                    "url": "https://www.iitrpr.ac.in/job@iitropar" },
+    { "name": "IIT Indore - JRF/SRF Positions",         "url": "https://www.iiti.ac.in/recruitments/jrf-srf-positions" },
+    { "name": "IIT Hyderabad - Careers",                "url": "https://iith.ac.in/careers/" },
+    { "name": "IIT Dharwad - Research Associates",      "url": "https://www.iitdh.ac.in/research-associates" },
+    { "name": "IIT Bombay - IRCC Jobs",                 "url": "https://rnd.iitb.ac.in/jobs" },
+    { "name": "NIT Silchar - Recruitment (all)",        "url": "https://www.nits.ac.in/recruitment-view-all" },
+    { "name": "NIT Raipur - Advertisements",            "url": "https://nitrr.ac.in/advertisement.php" }
+  ],
+
+  "keywords_include": [
+    "research associate", "project associate", "junior research fellow", "jrf",
+    "senior research fellow", "srf", "postdoc", "post-doctoral", "postdoctoral",
+    "project scientist", "research fellow", "project assistant", "research assistant"
+  ],
+
+  "keywords_field_filter": []
+}

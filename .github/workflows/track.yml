@@ -1,0 +1,41 @@
+name: Track research opportunities
+
+on:
+  schedule:
+    # Runs daily at 03:00 UTC (~08:30 IST). scraper.py itself checks
+    # config.json -> run_interval_days and no-ops most days, so this is
+    # cheap even though the trigger fires daily.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tracker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+        run: python scraper.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "opportunity-tracker-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add all_postings.csv seen_urls.json last_run.json digest.md
+          git diff --staged --quiet || git commit -m "Update postings [skip ci]"
+          git push
