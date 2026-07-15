@@ -183,6 +183,9 @@ def collect_page(name, url, include_kw):
 
 
 def should_run_now(interval_days):
+    import os
+    if os.environ.get("FORCE_RUN") == "true":
+        return True
     last = load_json(LAST_RUN_FILE, None)
     if last is None:
         return True
@@ -237,10 +240,13 @@ def main():
 
     print(f"\nDone. {len(new_items)} new / {len(filtered)} total matched this run.")
 
-    # Only ping you when there's actually something new -- no "nothing
-    # happened" noise every 4 days. Remove the `if new_items:` guard if
-    # you'd rather get a heartbeat every run to confirm it's alive.
-    if new_items:
+# Only ping you when there's actually something new, UNLESS this was
+    # a manually-triggered run (FORCE_RUN=true) -- then always attempt
+    # notifications so you can actually test your secrets are working,
+    # even when there happens to be nothing new to report.
+    import os as _os
+    force = _os.environ.get("FORCE_RUN") == "true"
+    if new_items or force:
         notify_telegram(lines)
         notify_email()
         notify_whatsapp()
