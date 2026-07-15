@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -85,12 +86,29 @@ def normalize_pdf_url(url):
 def find_notification_url(article_html):
     """Best-effort: pull the official notification/PDF link out of a
     Faculty Tick article page. Returns None if nothing recognizable is
-    found -- callers fall back to title-only classification."""
+    found -- callers fall back to title-only classification.
+
+    Checked in order of reliability: a direct .pdf href (works
+    regardless of what the link text says -- many articles just show
+    the raw URL as the link text, which hint-word matching would miss
+    entirely), a Google Drive share link, the plain-text "Reference:
+    <url>" pattern some articles use, and finally hint words in the
+    anchor text as a last resort."""
+    anchors = ANCHOR_RE.findall(article_html)
+
+    for href, _ in anchors:
+        if href.lower().split("?")[0].endswith(".pdf"):
+            return href
+
+    for href, _ in anchors:
+        if GDRIVE_FILE_RE.search(href):
+            return normalize_pdf_url(href)
+
     m = REFERENCE_TEXT_RE.search(article_html)
     if m:
         return normalize_pdf_url(m.group(1).rstrip(".,)"))
 
-    for href, inner in ANCHOR_RE.findall(article_html):
+    for href, inner in anchors:
         text = clean_text(inner).lower()
         if any(hint in text for hint in NOTIFICATION_ANCHOR_HINTS):
             return normalize_pdf_url(href)
@@ -116,27 +134,35 @@ def try_fetch_pdf(url):
 
 def resolve_document(item):
     """For a scraped item, work out the best URL to try fetching a PDF
-    from, then attempt the fetch. Returns base64 PDF data or None."""
-    url = item["url"]
-    if url.lower().endswith(".pdf"):
-        return try_fetch_pdf(url)
+    from, then attempt the fetch. Returns base64 PDF data or None.
 
-    # Faculty Tick article pages (or any page) that link out to the
-    # real notification somewhere in their body.
+    Content-sniffs FIRST rather than guessing from the file extension --
+    plenty of government sites serve PDFs from extension-less routes
+    (e.g. /notices/download?id=123), and guessing wrong used to mean we
+    tried to parse raw PDF bytes as HTML and found nothing."""
+    url = item["url"]
     try:
-        raw, _ = fetch_bytes(url, max_bytes=3_000_000)
-        page_html = raw.decode("utf-8", errors="replace")
+        data, content_type = fetch_bytes(url, max_bytes=20_000_000)
     except Exception as e:
-        print(f"[enrich] couldn't fetch article page {url}: {e}", file=sys.stderr)
+        print(f"[enrich] couldn't fetch {url}: {e}", file=sys.stderr)
         return None
 
+    if data[:5] == b"%PDF-" or "pdf" in content_type.lower():
+        return base64.b64encode(data).decode("ascii")
+
+    # Not a PDF itself -- treat it as an article/listing page and look
+    # for an embedded notification link.
+    page_html = data.decode("utf-8", errors="replace")
     doc_url = find_notification_url(page_html)
     if not doc_url:
         return None
     return try_fetch_pdf(doc_url)
 
 
-def call_gemini(model, api_key, parts, timeout=60):
+def call_gemini(model, api_key, parts, timeout=60, max_retries=4):
+    """Calls generateContent, retrying with backoff on 429 (rate limit)
+    and transient 5xx errors. Honors the Retry-After header when the
+    API sends one; otherwise backs off 5s, 10s, 20s, 40s."""
     url = GEMINI_ENDPOINT.format(model=model)
     body = json.dumps(
         {
@@ -150,9 +176,23 @@ def call_gemini(model, api_key, parts, timeout=60):
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    backoff = 5
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            retryable = e.code == 429 or 500 <= e.code < 600
+            if retryable and attempt < max_retries:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                wait = float(retry_after) if retry_after else backoff
+                print(f"[enrich] Gemini {e.code}, retrying in {wait:.0f}s (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
+                time.sleep(wait)
+                backoff *= 2
+                continue
+            raise
 
 
 PROMPT_TEMPLATE = """You are helping a researcher evaluate whether an academic job/research posting from an Indian IIT/NIT/IIIT is relevant to them, and extract the key facts.
@@ -202,14 +242,20 @@ def classify_and_extract(item, profile, model, api_key, pdf_b64):
     return json.loads(raw_text)
 
 
-def enrich_new_items(new_items, profile, model, api_key, max_items=40):
+def enrich_new_items(new_items, profile, model, api_key, max_items=40, request_delay=7):
     """Returns (relevant, not_relevant, unprocessed) -- three lists of
     dicts. `unprocessed` holds items where enrichment itself failed
     (network error, bad JSON, etc) so nothing gets silently lost; these
-    should still be shown to the user, just without the nice details."""
-    relevant, not_relevant, unprocessed = [], [], []
+    should still be shown to the user, just without the nice details.
 
-    for item in new_items[:max_items]:
+    request_delay paces the Gemini calls (seconds between each item) to
+    stay under free-tier RPM limits (~10 RPM for gemini-2.5-flash) --
+    call_gemini's own retry/backoff handles it if you still get 429'd."""
+    relevant, not_relevant, unprocessed = [], [], []
+    items_to_process = new_items[:max_items]
+
+    for i, item in enumerate(items_to_process):
+        print(f"[enrich] processing {i + 1}/{len(items_to_process)}: {item['title'][:70]}", file=sys.stderr)
         try:
             pdf_b64 = resolve_document(item)
             result = classify_and_extract(item, profile, model, api_key, pdf_b64)
@@ -223,7 +269,10 @@ def enrich_new_items(new_items, profile, model, api_key, max_items=40):
             print(f"[enrich] failed to enrich '{item['title']}': {e}", file=sys.stderr)
             unprocessed.append(item)
 
-    skipped = len(new_items) - len(new_items[:max_items])
+        if i < len(items_to_process) - 1:
+            time.sleep(request_delay)
+
+    skipped = len(new_items) - len(items_to_process)
     if skipped > 0:
         print(f"[enrich] {skipped} items skipped this run (max_items_to_enrich cap)", file=sys.stderr)
 

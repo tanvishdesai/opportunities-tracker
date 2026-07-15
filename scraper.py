@@ -276,8 +276,9 @@ def build_enriched_content(new_items, config):
         model = config.get("gemini_model", "gemini-2.5-flash")
         profile = config.get("gemini_relevance_profile", enrich.DEFAULT_PROFILE)
         max_items = config.get("max_items_to_enrich", 40)
+        request_delay = config.get("gemini_request_delay_seconds", 7)
         relevant, not_relevant, unprocessed = enrich.enrich_new_items(
-            new_items, profile, model, api_key, max_items=max_items
+            new_items, profile, model, api_key, max_items=max_items, request_delay=request_delay
         )
         print(
             f"[INFO] Enrichment: {len(relevant)} relevant, {len(not_relevant)} filtered out, "
