@@ -27,5 +27,8 @@
     "project scientist", "research fellow", "project assistant", "research assistant"
   ],
 
-  "keywords_field_filter": []
+  "keywords_field_filter": [],
+  "gemini_model": "gemini-2.5-flash",
+  "max_items_to_enrich": 40,
+  "gemini_relevance_profile": "Final-year Computer Science undergraduate researcher. Core interests: multimodal deepfake detection, adversarial and certified robustness, explainable AI (XAI), trustworthy/safe machine learning, computer vision, NLP, and machine learning broadly (including general Data Science / AI roles). NOT interested in postings in unrelated disciplines (pure civil, mechanical, chemical, biology, medical, humanities, law, physics, pure mathematics) UNLESS the posting explicitly involves AI/ML/computer-vision/data-science methods -- e.g. 'AI for structural health monitoring' in a Civil Engineering department DOES count."
 }

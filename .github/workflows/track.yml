@@ -24,6 +24,7 @@ jobs:
       - name: Run tracker
         env:
           FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}

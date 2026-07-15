@@ -24,6 +24,7 @@ trust the cron job blindly. See README.md.
 
 import csv
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -31,6 +32,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+import enrich
 
 HERE = Path(__file__).parent
 CONFIG_FILE = HERE / "config.json"
@@ -183,7 +186,6 @@ def collect_page(name, url, include_kw):
 
 
 def should_run_now(interval_days):
-    import os
     if os.environ.get("FORCE_RUN") == "true":
         return True
     last = load_json(LAST_RUN_FILE, None)
@@ -240,23 +242,60 @@ def main():
 
     print(f"\nDone. {len(new_items)} new / {len(filtered)} total matched this run.")
 
-# Only ping you when there's actually something new, UNLESS this was
+    # Only ping you when there's actually something new, UNLESS this was
     # a manually-triggered run (FORCE_RUN=true) -- then always attempt
     # notifications so you can actually test your secrets are working,
     # even when there happens to be nothing new to report.
-    import os as _os
-    force = _os.environ.get("FORCE_RUN") == "true"
+    force = os.environ.get("FORCE_RUN") == "true"
     if new_items or force:
+        html_body, whatsapp_text = build_enriched_content(new_items, config)
         notify_telegram(lines)
-        notify_email()
-        notify_whatsapp()
+        notify_email(html_body)
+        notify_whatsapp(whatsapp_text)
+
+
+def build_enriched_content(new_items, config):
+    """Runs the Gemini-based relevance filter + PDF extraction over
+    new_items and renders an HTML email body + condensed WhatsApp text.
+    Falls back to the plain unfiltered digest if GEMINI_API_KEY isn't
+    set, or if enrichment blows up entirely -- never let a problem here
+    stop you from getting your notifications."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    run_date = datetime.now().strftime("%Y-%m-%d")
+
+    if not new_items:
+        plain = "No new postings matching your keywords since the last run."
+        return f"<html><body><p>{plain}</p></body></html>", plain
+
+    if not api_key:
+        print("[INFO] GEMINI_API_KEY not set -- sending unfiltered digest.", file=sys.stderr)
+        plain = DIGEST_FILE.read_text(encoding="utf-8")
+        return f"<html><body><pre>{plain}</pre></body></html>", plain
+
+    try:
+        model = config.get("gemini_model", "gemini-2.5-flash")
+        profile = config.get("gemini_relevance_profile", enrich.DEFAULT_PROFILE)
+        max_items = config.get("max_items_to_enrich", 40)
+        relevant, not_relevant, unprocessed = enrich.enrich_new_items(
+            new_items, profile, model, api_key, max_items=max_items
+        )
+        print(
+            f"[INFO] Enrichment: {len(relevant)} relevant, {len(not_relevant)} filtered out, "
+            f"{len(unprocessed)} couldn't be processed.",
+            file=sys.stderr,
+        )
+        html_body = enrich.render_email_html(relevant, unprocessed, run_date)
+        whatsapp_text = enrich.render_whatsapp_text(relevant, unprocessed)
+        return html_body, whatsapp_text
+    except Exception as e:
+        print(f"[WARN] Enrichment pipeline failed entirely ({e}); falling back to plain digest.", file=sys.stderr)
+        plain = DIGEST_FILE.read_text(encoding="utf-8")
+        return f"<html><body><pre>{plain}</pre></body></html>", plain
 
 
 def notify_telegram(digest_lines):
     """Optional: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as env vars
     (e.g. GitHub Actions secrets) to also get pinged in Telegram."""
-    import os
-
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -276,12 +315,12 @@ def notify_telegram(digest_lines):
         print(f"[WARN] Telegram notification failed: {e}", file=sys.stderr)
 
 
-def notify_email():
+def notify_email(html_body):
     """Optional: set GMAIL_ADDRESS and GMAIL_APP_PASSWORD as env vars /
     GitHub secrets to get an email digest via Gmail's SMTP server. Sends
     to itself by default; set GMAIL_TO to send somewhere else."""
-    import os
     import smtplib
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     addr = os.environ.get("GMAIL_ADDRESS")
@@ -290,11 +329,16 @@ def notify_email():
     if not addr or not app_password:
         return
 
-    body = DIGEST_FILE.read_text(encoding="utf-8")
-    msg = MIMEText(body, "plain", "utf-8")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Research opportunities digest — {datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = addr
     msg["To"] = to_addr
+    # Plain-text fallback for clients that don't render HTML, generated
+    # by stripping tags from the HTML body (crude but functional).
+    plain_fallback = re.sub(r"<[^>]+>", " ", html_body)
+    plain_fallback = re.sub(r"\s+", " ", plain_fallback).strip()
+    msg.attach(MIMEText(plain_fallback, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
@@ -305,13 +349,12 @@ def notify_email():
         print(f"[WARN] Email send failed: {e}", file=sys.stderr)
 
 
-def notify_whatsapp():
+def notify_whatsapp(text):
     """Optional: set CALLMEBOT_PHONE and CALLMEBOT_APIKEY as env vars /
     GitHub secrets to get a WhatsApp digest via the CallMeBot API
     (callmebot.com) -- an unofficial, personal-use-only third-party
     service (not run by Meta/WhatsApp). Fine for a personal notification;
     has no SLA, so don't make it your only channel."""
-    import os
     import urllib.parse
 
     phone = os.environ.get("CALLMEBOT_PHONE")
@@ -319,9 +362,8 @@ def notify_whatsapp():
     if not phone or not apikey:
         return
 
-    text = DIGEST_FILE.read_text(encoding="utf-8")
     if len(text) > 1500:
-        text = text[:1500] + "\n...(truncated -- see the repo for the full digest)"
+        text = text[:1500] + "\n...(truncated -- see the repo/email for the full digest)"
 
     url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode(
         {"phone": phone, "text": text, "apikey": apikey}
