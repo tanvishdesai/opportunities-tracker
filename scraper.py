@@ -280,7 +280,7 @@ def notify_email():
 
     addr = os.environ.get("GMAIL_ADDRESS")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    to_addr = os.environ.get("GMAIL_TO", addr) or addr
+    to_addr = os.environ.get("GMAIL_TO") or addr
     if not addr or not app_password:
         return
 
